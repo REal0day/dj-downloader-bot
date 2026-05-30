@@ -15,7 +15,7 @@ import { searchYouTube, downloadAudio, checkYtdlp } from './src/ytdlp.js';
 import { formatDuration, formatViews, SerialQueue } from './src/util.js';
 import { identify, detectBpm, writeTags, formatVerification, isVerified, readScore } from './src/acoustid.js';
 import { loadWatchlist, addWatch, removeWatch, checkAll, detectPlatform } from './src/watcher.js';
-import { fetchNewReleases, fetchLatestChart, fetchChartTracks } from './src/beatport.js';
+import { fetchNewReleases, fetchChartTracks } from './src/beatport.js';
 
 // ---- startup validation ----
 const errors = validateConfig();
@@ -368,7 +368,18 @@ async function handleWatch(message, watchPrefix) {
 }
 
 async function handleChart(message, chartPrefix) {
-  const genreArg = message.content.slice(chartPrefix.length).trim();
+  const args     = message.content.slice(chartPrefix.length).trim().split(/\s+/);
+  const chartUrl = args[0]?.startsWith('http') ? args[0] : null;
+  const genreArg = chartUrl ? args.slice(1).join(' ') : args.join(' ');
+
+  if (!chartUrl) {
+    await message.reply(
+      `Paste the Beatport chart URL:\n\`${chartPrefix} <beatport-chart-url> [genre]\`\n\n` +
+      `Example:\n\`${chartPrefix} https://www.beatport.com/chart/best-new-hard-techno-june-2026/891416 Hard Techno\``
+    );
+    return;
+  }
+
   const genre = genreArg
     ? config.genres.find((g) => g.toLowerCase() === genreArg.toLowerCase())
     : null;
@@ -378,16 +389,17 @@ async function handleChart(message, chartPrefix) {
     return;
   }
 
-  const status = await message.reply('⏳ Finding latest Hard Techno chart on Beatport…');
+  const status = await message.reply('⏳ Fetching chart from Beatport via yt-dlp…');
 
-  let chart, tracks;
+  let tracks;
   try {
-    chart  = await fetchLatestChart(config.beatportChartsUrl);
-    tracks = await fetchChartTracks(chart.url);
+    tracks = await fetchChartTracks(chartUrl);
   } catch (err) {
     await status.edit(`❌ Beatport error: ${err.message}`);
     return;
   }
+
+  const chart = { name: 'Beatport Chart', url: chartUrl };
 
   if (!tracks.length) {
     await status.edit('No tracks found in that chart.');
@@ -399,11 +411,9 @@ async function handleChart(message, chartPrefix) {
     .setURL(chart.url)
     .setColor(0x01ff95)
     .setDescription(
-      tracks.map((t, i) => {
-        const title = t.mix ? `${t.title} (${t.mix})` : t.title;
-        const meta  = [t.label, t.year, t.duration].filter(Boolean).join(' · ');
-        return `**${i + 1}.** ${t.artists} — ${title}\n   ${meta}`;
-      }).join('\n\n')
+      tracks.map((t, i) =>
+        `**${i + 1}.** ${t.title}${t.duration ? ` · ${t.duration}` : ''}`
+      ).join('\n')
     )
     .setFooter({ text: `${tracks.length} tracks · click Download All or pick a number` });
 
@@ -465,7 +475,7 @@ async function handleChart(message, chartPrefix) {
   const destDir  = path.join(config.outputDir, destGenre);
   await mkdir(destDir, { recursive: true });
 
-  const statuses = toDownload.map((t) => ({ label: `${t.artists} — ${t.title}`, icon: '⏳' }));
+  const statuses = toDownload.map((t) => ({ label: t.title, icon: '⏳' }));
   const renderStatus = () =>
     `⬇️ Chart download → \`${destGenre}\` (${toDownload.length} tracks)\n` +
     statuses.map((s, i) => `**${i + 1}.** ${s.icon} ${s.label}`).join('\n');
@@ -477,7 +487,7 @@ async function handleChart(message, chartPrefix) {
       statuses[i].icon = '🔎';
       await status.edit(renderStatus()).catch(() => {});
 
-      const query = `${track.artists} - ${track.title}${track.mix ? ` ${track.mix}` : ''}`;
+      const query = track.searchQuery;
       let results;
       try {
         results = await searchYouTube(query, 1);
@@ -531,11 +541,9 @@ async function handleNew(message) {
     .setTitle('🆕 New on Beatport')
     .setColor(0x01ff95)
     .setDescription(
-      tracks.map((t, i) => {
-        const title = t.mix ? `${t.title} (${t.mix})` : t.title;
-        const meta  = [t.label, t.year, t.duration].filter(Boolean).join(' · ');
-        return `**${i + 1}.** ${t.artists} — ${title}\n   ${meta}`;
-      }).join('\n\n')
+      tracks.map((t, i) =>
+        `**${i + 1}.** ${t.title}${t.duration ? ` · ${t.duration}` : ''}`
+      ).join('\n')
     )
     .setFooter({ text: 'Pick a number to search YouTube and download.' });
 
@@ -560,7 +568,7 @@ async function handleNew(message) {
   }
 
   const chosen = tracks[parseInt(pick.customId.split(':')[1], 10)];
-  const query  = `${chosen.artists} - ${chosen.title}`;
+  const query  = chosen.searchQuery;
 
   await pick.update({ content: `🔎 Searching YouTube for **${query}**…`, embeds: [], components: [] });
 
