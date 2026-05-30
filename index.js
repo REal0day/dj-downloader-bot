@@ -14,6 +14,8 @@ import { config, validateConfig } from './src/config.js';
 import { searchYouTube, downloadAudio, checkYtdlp } from './src/ytdlp.js';
 import { formatDuration, formatViews, SerialQueue } from './src/util.js';
 import { identify, detectBpm, writeTags, formatVerification, isVerified, readScore } from './src/acoustid.js';
+import { loadWatchlist, addWatch, removeWatch, checkAll, detectPlatform } from './src/watcher.js';
+import { fetchNewReleases } from './src/beatport.js';
 
 // ---- startup validation ----
 const errors = validateConfig();
@@ -39,7 +41,40 @@ client.once('clientReady', async (c) => {
   console.log(`Output dir: ${config.outputDir}`);
   console.log(`Genres: ${config.genres.join(', ')}`);
   console.log(`Listening for: "${config.prefix} <song name>"`);
+
+  if (config.watchChannelId) {
+    // Wait 1 min before first check so the bot fully settles after restart
+    setTimeout(() => runWatchPoll(c), 60_000);
+    setInterval(() => runWatchPoll(c), config.watchIntervalMs);
+    console.log(`Watch polling: every ${config.watchIntervalMs / 3_600_000}h → channel ${config.watchChannelId}`);
+  } else {
+    console.log('Watch polling disabled — set WATCH_CHANNEL_ID to enable.');
+  }
 });
+
+async function runWatchPoll(discordClient) {
+  try {
+    const updates = await checkAll();
+    if (!updates.length) return;
+
+    const channel = await discordClient.channels.fetch(config.watchChannelId).catch(() => null);
+    if (!channel) return;
+
+    for (const { entry, newItems } of updates) {
+      const lines = newItems.map((item, i) =>
+        `**${i + 1}.** [${item.title}](${item.url})`
+      );
+      const plural = newItems.length > 1 ? `${newItems.length} new uploads` : '1 new upload';
+      await channel.send(
+        `🆕 **${entry.label}** — ${plural} (${entry.platform})\n` +
+        lines.join('\n') +
+        `\n\nUse \`${config.prefix} <title>\` to download any of these.`
+      ).catch(() => {});
+    }
+  } catch (err) {
+    console.error('Watch poll error:', err.message);
+  }
+}
 
 // Build rows of genre buttons (max 5 per row, max 5 rows).
 function buildGenreRows() {
@@ -89,6 +124,20 @@ client.on('messageCreate', async (message) => {
   // access control
   if (config.allowedUserId && message.author.id !== config.allowedUserId) return;
   if (config.allowedChannelId && message.channelId !== config.allowedChannelId) return;
+
+  // ---- watch command: !dlwatch add/list/remove/check ----
+  const watchPrefix = config.prefix + 'watch';
+  if (message.content.startsWith(watchPrefix)) {
+    await handleWatch(message, watchPrefix);
+    return;
+  }
+
+  // ---- new releases command: !dlnew ----
+  const newPrefix = config.prefix + 'new';
+  if (message.content.startsWith(newPrefix)) {
+    await handleNew(message);
+    return;
+  }
 
   // ---- report command: !dlreport [genre] ----
   const reportPrefix = config.prefix + 'report';
@@ -234,6 +283,206 @@ client.on('messageCreate', async (message) => {
     }
   });
 });
+
+async function handleWatch(message, watchPrefix) {
+  const args = message.content.slice(watchPrefix.length).trim().split(/\s+/);
+  const sub  = args[0]?.toLowerCase();
+
+  if (sub === 'add') {
+    const url   = args[1];
+    const label = args.slice(2).join(' ') || null;
+    if (!url) {
+      await message.reply(`Usage: \`${watchPrefix} add <url> [label]\``);
+      return;
+    }
+    const status = await message.reply(`⏳ Fetching latest from ${detectPlatform(url)}…`);
+    const result = await addWatch(url, label);
+    if (!result.ok) {
+      await status.edit(`❌ ${result.reason}`);
+    } else {
+      await status.edit(
+        `✅ Watching **${result.entry.label}** (${result.entry.platform})\n` +
+        `Alerts → <#${config.watchChannelId ?? 'no channel set'}> every 6h.`
+      );
+    }
+    return;
+  }
+
+  if (sub === 'list') {
+    const list = await loadWatchlist();
+    if (!list.length) {
+      await message.reply('No artists being watched. Use `!dlwatch add <url>` to start.');
+      return;
+    }
+    const lines = list.map((e, i) =>
+      `**${i + 1}.** ${e.label} (${e.platform}) — ${e.url}`
+    );
+    await message.reply(`**Watchlist (${list.length})**\n${lines.join('\n')}`);
+    return;
+  }
+
+  if (sub === 'remove') {
+    const query = args.slice(1).join(' ');
+    if (!query) {
+      await message.reply(`Usage: \`${watchPrefix} remove <name or number>\``);
+      return;
+    }
+    const removed = await removeWatch(query);
+    if (!removed) {
+      await message.reply(`❌ No match for **${query}**. Use \`${watchPrefix} list\` to see entries.`);
+    } else {
+      await message.reply(`🗑️ Removed **${removed.label}** (${removed.platform}).`);
+    }
+    return;
+  }
+
+  if (sub === 'check') {
+    const status = await message.reply('🔍 Checking all watched channels now…');
+    const updates = await checkAll();
+    if (!updates.length) {
+      await status.edit('✅ No new content found.');
+    } else {
+      const lines = updates.map((u) =>
+        `**${u.entry.label}** (${u.entry.platform}): ${u.newItems.length} new`
+      );
+      await status.edit(`🆕 Found updates:\n${lines.join('\n')}\nPosting to watch channel…`);
+      await runWatchPoll(message.client);
+    }
+    return;
+  }
+
+  await message.reply(
+    `**${watchPrefix} commands**\n` +
+    `• \`${watchPrefix} add <url> [label]\` — watch a YouTube/SoundCloud/Mixcloud/Bandcamp channel\n` +
+    `• \`${watchPrefix} list\` — show all watched channels\n` +
+    `• \`${watchPrefix} remove <name or #>\` — stop watching\n` +
+    `• \`${watchPrefix} check\` — manually trigger a check now`
+  );
+}
+
+async function handleNew(message) {
+  const status = await message.reply('⏳ Fetching new releases from Beatport…');
+
+  let tracks;
+  try {
+    tracks = await fetchNewReleases(config.beatportUrl);
+  } catch (err) {
+    await status.edit(`❌ Beatport fetch failed: ${err.message}`);
+    return;
+  }
+
+  if (!tracks.length) {
+    await status.edit('No tracks found on Beatport. Try again later.');
+    return;
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle('🆕 New on Beatport')
+    .setColor(0x01ff95)
+    .setDescription(
+      tracks.map((t, i) => {
+        const title = t.mix ? `${t.title} (${t.mix})` : t.title;
+        const meta  = [t.label, t.year, t.duration].filter(Boolean).join(' · ');
+        return `**${i + 1}.** ${t.artists} — ${title}\n   ${meta}`;
+      }).join('\n\n')
+    )
+    .setFooter({ text: 'Pick a number to search YouTube and download.' });
+
+  await status.edit({
+    content: null,
+    embeds: [embed],
+    components: buildTrackRow(tracks.length),
+  });
+
+  const filter = (i) => i.user.id === message.author.id;
+  let pick;
+  try {
+    pick = await status.awaitMessageComponent({ filter, componentType: ComponentType.Button, time: 60_000 });
+  } catch {
+    await status.edit({ content: '⏳ Timed out.', embeds: [], components: [] });
+    return;
+  }
+
+  if (pick.customId === 'cancel') {
+    await pick.update({ content: 'Cancelled.', embeds: [], components: [] });
+    return;
+  }
+
+  const chosen = tracks[parseInt(pick.customId.split(':')[1], 10)];
+  const query  = `${chosen.artists} - ${chosen.title}`;
+
+  await pick.update({ content: `🔎 Searching YouTube for **${query}**…`, embeds: [], components: [] });
+
+  let results;
+  try {
+    results = await searchYouTube(query, config.searchResults);
+  } catch (err) {
+    await status.edit(`❌ Search failed: ${err.message}`);
+    return;
+  }
+  if (!results.length) {
+    await status.edit(`No YouTube results for **${query}**.`);
+    return;
+  }
+
+  const listEmbed = new EmbedBuilder()
+    .setTitle(`YouTube results for "${query}"`)
+    .setColor(0x1db954)
+    .setDescription(
+      results.map((r, i) =>
+        `**${i + 1}.** [${r.title}](${r.url})\n` +
+        `   ⏱ ${formatDuration(r.duration)} · 👁 ${formatViews(r.viewCount)} · ${r.channel}`
+      ).join('\n\n')
+    )
+    .setFooter({ text: 'Pick a number to download, or ✕ to cancel.' });
+
+  await status.edit({ content: null, embeds: [listEmbed], components: buildTrackRow(results.length) });
+
+  let ytPick;
+  try {
+    ytPick = await status.awaitMessageComponent({ filter, componentType: ComponentType.Button, time: 60_000 });
+  } catch {
+    await status.edit({ content: '⏳ Timed out.', embeds: [], components: [] });
+    return;
+  }
+  if (ytPick.customId === 'cancel') {
+    await ytPick.update({ content: 'Cancelled.', embeds: [], components: [] });
+    return;
+  }
+
+  const ytChosen = results[parseInt(ytPick.customId.split(':')[1], 10)];
+  await ytPick.update({
+    content: `Selected: **${ytChosen.title}**\nWhich folder?`,
+    embeds: [],
+    components: buildGenreRows(),
+  });
+
+  let genreInteraction;
+  try {
+    genreInteraction = await status.awaitMessageComponent({ filter, componentType: ComponentType.Button, time: 60_000 });
+  } catch {
+    await status.edit({ content: '⏳ Timed out.', components: [] });
+    return;
+  }
+
+  const genre   = config.genres[parseInt(genreInteraction.customId.split(':')[1], 10)];
+  const destDir = path.join(config.outputDir, genre);
+  await genreInteraction.update({ content: `⬇️ Downloading **${ytChosen.title}** → \`${genre}\`…`, components: [] });
+
+  downloadQueue.add(async () => {
+    try {
+      await mkdir(destDir, { recursive: true });
+      const finalPath    = await downloadAudio(ytChosen.url, destDir);
+      const [match, bpm] = await Promise.all([identify(finalPath), detectBpm(finalPath)]);
+      writeTags(finalPath, match, bpm);
+      await status.edit(
+        `✅ **${path.basename(finalPath)}**\n→ \`${genre}\` (${config.audioBitrate} MP3)\n${formatVerification(match, bpm)}`
+      );
+    } catch (err) {
+      await status.edit(`❌ Download failed: ${err.message}`);
+    }
+  });
+}
 
 async function handleReport(message, reportPrefix) {
   const genreArg = message.content.slice(reportPrefix.length).trim();

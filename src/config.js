@@ -20,7 +20,10 @@ export const config = {
   searchResults: clampInt(process.env.SEARCH_RESULTS, 1, 5, 5),
   audioBitrate: process.env.AUDIO_BITRATE?.trim() || '320K',
   ytdlpPath: process.env.YTDLP_PATH?.trim() || 'yt-dlp',
-  acoustidKey: process.env.ACOUSTID_API_KEY?.trim() || '',
+  acoustidKey:    process.env.ACOUSTID_API_KEY?.trim() || '',
+  watchChannelId: process.env.WATCH_CHANNEL_ID?.trim() || null,
+  beatportUrl:    process.env.BEATPORT_NEW_URL?.trim() || 'https://www.beatport.com/genre/hard-techno/147/tracks',
+  watchIntervalMs: 6 * 60 * 60 * 1000, // 6 hours
 };
 
 export function validateConfig() {
