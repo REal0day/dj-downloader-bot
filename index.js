@@ -60,24 +60,25 @@ function buildGenreRows() {
   return rows.slice(0, 5);
 }
 
-// Build the row of numbered track-pick buttons + cancel.
+// Build rows of numbered track-pick buttons + a cancel row.
+// Cancel gets its own row so the track buttons row never exceeds 5.
 function buildTrackRow(count) {
-  const row = new ActionRowBuilder();
+  const trackRow = new ActionRowBuilder();
   for (let i = 0; i < count; i++) {
-    row.addComponents(
+    trackRow.addComponents(
       new ButtonBuilder()
         .setCustomId(`pick:${i}`)
         .setLabel(String(i + 1))
         .setStyle(ButtonStyle.Primary)
     );
   }
-  row.addComponents(
+  const cancelRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId('cancel')
-      .setLabel('✕')
+      .setLabel('✕ Cancel')
       .setStyle(ButtonStyle.Danger)
   );
-  return row;
+  return [trackRow, cancelRow];
 }
 
 client.on('messageCreate', async (message) => {
@@ -127,7 +128,7 @@ client.on('messageCreate', async (message) => {
   await searching.edit({
     content: null,
     embeds: [listEmbed],
-    components: [buildTrackRow(results.length)],
+    components: buildTrackRow(results.length),
   });
 
   // only the requester can press buttons
