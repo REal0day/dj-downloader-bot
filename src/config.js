@@ -22,7 +22,8 @@ export const config = {
   ytdlpPath: process.env.YTDLP_PATH?.trim() || 'yt-dlp',
   acoustidKey:    process.env.ACOUSTID_API_KEY?.trim() || '',
   watchChannelId: process.env.WATCH_CHANNEL_ID?.trim() || null,
-  beatportUrl:    process.env.BEATPORT_NEW_URL?.trim() || 'https://www.beatport.com/genre/hard-techno/2/tracks',
+  beatportUrl:       process.env.BEATPORT_NEW_URL?.trim()    || 'https://www.beatport.com/genre/hard-techno/2/tracks',
+  beatportChartsUrl: process.env.BEATPORT_CHARTS_URL?.trim() || 'https://www.beatport.com/genre/hard-techno/2/charts',
   watchIntervalMs: 6 * 60 * 60 * 1000, // 6 hours
 };
 
