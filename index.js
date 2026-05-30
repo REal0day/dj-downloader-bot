@@ -89,9 +89,20 @@ client.on('messageCreate', async (message) => {
   if (config.allowedUserId && message.author.id !== config.allowedUserId) return;
   if (config.allowedChannelId && message.channelId !== config.allowedChannelId) return;
 
+  // ---- batch command: !dlbatch <genre>\nsong1\nsong2\n... ----
+  const batchPrefix = config.prefix + 'batch';
+  if (message.content.startsWith(batchPrefix)) {
+    await handleBatch(message, batchPrefix);
+    return;
+  }
+
   const query = message.content.slice(config.prefix.length).trim();
   if (!query) {
-    await message.reply(`Usage: \`${config.prefix} artist - track name\``);
+    await message.reply(
+      `Usage:\n` +
+      `• Single: \`${config.prefix} artist - track\`\n` +
+      `• Batch:  \`${batchPrefix} <genre>\\n<song1>\\n<song2>\\n...\``
+    );
     return;
   }
 
@@ -203,5 +214,84 @@ client.on('messageCreate', async (message) => {
     }
   });
 });
+
+async function handleBatch(message, batchPrefix) {
+  const lines = message.content
+    .slice(batchPrefix.length)
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  if (lines.length < 2) {
+    await message.reply(
+      `Usage:\n\`\`\`\n${batchPrefix} <genre>\nsong 1\nsong 2\n...\n\`\`\`\nAvailable genres: ${config.genres.join(', ')}`
+    );
+    return;
+  }
+
+  const genreLine = lines[0];
+  const queries = lines.slice(1);
+
+  const genre = config.genres.find((g) => g.toLowerCase() === genreLine.toLowerCase());
+  if (!genre) {
+    await message.reply(
+      `Unknown genre **${genreLine}**.\nAvailable: ${config.genres.join(', ')}`
+    );
+    return;
+  }
+
+  const destDir = path.join(config.outputDir, genre);
+  await mkdir(destDir, { recursive: true });
+
+  // track per-song state for the live status message
+  const statuses = queries.map((q) => ({ query: q, icon: '⏳', label: q }));
+
+  const renderStatus = () =>
+    `⬇️ Batch → \`${genre}\` (${queries.length} tracks)\n` +
+    statuses.map((s, i) => `**${i + 1}.** ${s.icon} ${s.label}`).join('\n');
+
+  const statusMsg = await message.reply(renderStatus());
+
+  for (let i = 0; i < queries.length; i++) {
+    const q = queries[i];
+    downloadQueue.add(async () => {
+      statuses[i].icon = '🔎';
+      await statusMsg.edit(renderStatus()).catch(() => {});
+
+      let results;
+      try {
+        results = await searchYouTube(q, 1);
+      } catch (err) {
+        statuses[i].icon = '❌';
+        statuses[i].label = `${q} — search failed`;
+        await statusMsg.edit(renderStatus()).catch(() => {});
+        return;
+      }
+
+      if (!results.length) {
+        statuses[i].icon = '❌';
+        statuses[i].label = `${q} — no results`;
+        await statusMsg.edit(renderStatus()).catch(() => {});
+        return;
+      }
+
+      const track = results[0];
+      statuses[i].icon = '⬇️';
+      statuses[i].label = track.title;
+      await statusMsg.edit(renderStatus()).catch(() => {});
+
+      try {
+        const finalPath = await downloadAudio(track.url, destDir);
+        statuses[i].icon = '✅';
+        statuses[i].label = path.basename(finalPath);
+      } catch (err) {
+        statuses[i].icon = '❌';
+        statuses[i].label = `${track.title} — download failed`;
+      }
+
+      await statusMsg.edit(renderStatus()).catch(() => {});
+    });
+  }
+}
 
 client.login(config.token);
