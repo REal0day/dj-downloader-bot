@@ -13,7 +13,7 @@ import path from 'node:path';
 import { config, validateConfig } from './src/config.js';
 import { searchYouTube, downloadAudio, checkYtdlp } from './src/ytdlp.js';
 import { formatDuration, formatViews, SerialQueue } from './src/util.js';
-import { identify, detectBpm, writeTags, formatVerification, isVerified } from './src/acoustid.js';
+import { identify, detectBpm, writeTags, formatVerification, isVerified, readScore } from './src/acoustid.js';
 
 // ---- startup validation ----
 const errors = validateConfig();
@@ -89,6 +89,13 @@ client.on('messageCreate', async (message) => {
   // access control
   if (config.allowedUserId && message.author.id !== config.allowedUserId) return;
   if (config.allowedChannelId && message.channelId !== config.allowedChannelId) return;
+
+  // ---- report command: !dlreport [genre] ----
+  const reportPrefix = config.prefix + 'report';
+  if (message.content.startsWith(reportPrefix)) {
+    await handleReport(message, reportPrefix);
+    return;
+  }
 
   // ---- scan command: !dlscan [genre] ----
   const scanPrefix = config.prefix + 'scan';
@@ -227,6 +234,75 @@ client.on('messageCreate', async (message) => {
     }
   });
 });
+
+async function handleReport(message, reportPrefix) {
+  const genreArg = message.content.slice(reportPrefix.length).trim();
+
+  let targets;
+  if (genreArg) {
+    const genre = config.genres.find((g) => g.toLowerCase() === genreArg.toLowerCase());
+    if (!genre) {
+      await message.reply(`Unknown genre **${genreArg}**.\nAvailable: ${config.genres.join(', ')}`);
+      return;
+    }
+    targets = [{ genre, dir: path.join(config.outputDir, genre) }];
+  } else {
+    targets = config.genres.map((g) => ({ genre: g, dir: path.join(config.outputDir, g) }));
+  }
+
+  const lowConfidence = [];  // score < 80 but processed
+  const unverified = [];     // never processed
+
+  for (const { genre, dir } of targets) {
+    let entries;
+    try {
+      entries = await readdir(dir, { recursive: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.toLowerCase().endsWith('.mp3')) continue;
+      const fullPath = path.join(dir, entry);
+      const score = readScore(fullPath);
+      if (score === null) {
+        unverified.push({ genre, name: path.basename(entry) });
+      } else if (score < 80) {
+        lowConfidence.push({ genre, name: path.basename(entry), score });
+      }
+    }
+  }
+
+  if (!lowConfidence.length && !unverified.length) {
+    await message.reply('✅ All files verified at ≥ 80% confidence. Nothing to flag.');
+    return;
+  }
+
+  const lines = [];
+
+  if (lowConfidence.length) {
+    lowConfidence.sort((a, b) => a.score - b.score);
+    lines.push(`**⚠️ Low confidence (${lowConfidence.length})**`);
+    for (const f of lowConfidence) {
+      lines.push(`  ${f.score}% · \`${f.genre}\` · ${f.name}`);
+    }
+  }
+
+  if (unverified.length) {
+    lines.push(`\n**❓ Never scanned (${unverified.length}) — run \`!dlscan\`**`);
+    for (const f of unverified) {
+      lines.push(`  \`${f.genre}\` · ${f.name}`);
+    }
+  }
+
+  // Discord message cap: 2000 chars. Truncate if needed.
+  const header = `**!dlreport** — ${lowConfidence.length} low confidence · ${unverified.length} unscanned\n\n`;
+  let body = lines.join('\n');
+  if (header.length + body.length > 1900) {
+    body = body.slice(0, 1900 - header.length) + '\n…(truncated)';
+  }
+
+  await message.reply(header + body);
+}
 
 async function handleScan(message, scanPrefix) {
   const genreArg = message.content.slice(scanPrefix.length).trim();

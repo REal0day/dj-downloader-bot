@@ -74,6 +74,19 @@ export function isVerified(filePath) {
   }
 }
 
+// Returns the stored ACOUSTID_SCORE (0-100), or null if not yet processed.
+export function readScore(filePath) {
+  try {
+    const tags = NodeID3.read(filePath);
+    const entry = tags.userDefinedText?.find((t) => t.description === 'ACOUSTID_SCORE');
+    if (!entry) return null;
+    const n = parseInt(entry.value, 10);
+    return Number.isNaN(n) ? null : n;
+  } catch {
+    return null;
+  }
+}
+
 export function writeTags(filePath, match, bpm) {
   const score = match?.score ?? 0;
   const tags = {};
