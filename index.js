@@ -412,7 +412,7 @@ async function handleChart(message, chartPrefix) {
     .setColor(0x01ff95)
     .setDescription(
       tracks.map((t, i) =>
-        `**${i + 1}.** ${t.title}${t.duration ? ` · ${t.duration}` : ''}`
+        `**${i + 1}.** ${t.displayTitle}${t.duration ? ` · ${t.duration}` : ''}`
       ).join('\n')
     )
     .setFooter({ text: `${tracks.length} tracks · click Download All or pick a number` });
@@ -475,7 +475,7 @@ async function handleChart(message, chartPrefix) {
   const destDir  = path.join(config.outputDir, destGenre);
   await mkdir(destDir, { recursive: true });
 
-  const statuses = toDownload.map((t) => ({ label: t.title, icon: '⏳' }));
+  const statuses = toDownload.map((t) => ({ label: t.displayTitle, icon: '⏳' }));
   const renderStatus = () =>
     `⬇️ Chart download → \`${destGenre}\` (${toDownload.length} tracks)\n` +
     statuses.map((s, i) => `**${i + 1}.** ${s.icon} ${s.label}`).join('\n');
@@ -542,7 +542,7 @@ async function handleNew(message) {
     .setColor(0x01ff95)
     .setDescription(
       tracks.map((t, i) =>
-        `**${i + 1}.** ${t.title}${t.duration ? ` · ${t.duration}` : ''}`
+        `**${i + 1}.** ${t.displayTitle}${t.duration ? ` · ${t.duration}` : ''}`
       ).join('\n')
     )
     .setFooter({ text: 'Pick a number to search YouTube and download.' });
