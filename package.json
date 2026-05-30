@@ -1,0 +1,14 @@
+{
+  "name": "dj-downloader-bot",
+  "version": "1.0.0",
+  "description": "Discord bot that searches YouTube, lets you pick a result, downloads it as 320kbps MP3, and drops it into a Rekordbox watch folder.",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5"
+  }
+}
