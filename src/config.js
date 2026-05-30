@@ -20,6 +20,7 @@ export const config = {
   searchResults: clampInt(process.env.SEARCH_RESULTS, 1, 5, 5),
   audioBitrate: process.env.AUDIO_BITRATE?.trim() || '320K',
   ytdlpPath: process.env.YTDLP_PATH?.trim() || 'yt-dlp',
+  acoustidKey: process.env.ACOUSTID_API_KEY?.trim() || '',
 };
 
 export function validateConfig() {

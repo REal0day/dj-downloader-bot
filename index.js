@@ -13,6 +13,7 @@ import path from 'node:path';
 import { config, validateConfig } from './src/config.js';
 import { searchYouTube, downloadAudio, checkYtdlp } from './src/ytdlp.js';
 import { formatDuration, formatViews, SerialQueue } from './src/util.js';
+import { identify, detectBpm, writeTags, formatVerification } from './src/acoustid.js';
 
 // ---- startup validation ----
 const errors = validateConfig();
@@ -204,10 +205,15 @@ client.on('messageCreate', async (message) => {
       await mkdir(destDir, { recursive: true });
       const finalPath = await downloadAudio(chosen.url, destDir);
       const filename = path.basename(finalPath);
+
+      const [match, bpm] = await Promise.all([identify(finalPath), detectBpm(finalPath)]);
+      if (match && match.score >= 0.5) writeTags(finalPath, match, bpm);
+      const verification = formatVerification(match, bpm);
+
       await searching.edit(
         `✅ **${filename}**\n` +
-          `→ \`${genre}\` (${config.audioBitrate} MP3)\n` +
-          `Rekordbox will import it on next launch / folder refresh.`
+        `→ \`${genre}\` (${config.audioBitrate} MP3)\n` +
+        `${verification}`
       );
     } catch (err) {
       await searching.edit(`❌ Download failed for **${chosen.title}**: ${err.message}`);
@@ -282,8 +288,18 @@ async function handleBatch(message, batchPrefix) {
 
       try {
         const finalPath = await downloadAudio(track.url, destDir);
-        statuses[i].icon = '✅';
-        statuses[i].label = path.basename(finalPath);
+        const [match, bpm] = await Promise.all([identify(finalPath), detectBpm(finalPath)]);
+        if (match && match.score >= 0.5) writeTags(finalPath, match, bpm);
+        const pct = match ? `${Math.round(match.score * 100)}%` : null;
+        const parts = [
+          path.basename(finalPath),
+          match?.artist ?? null,
+          match?.year   ?? null,
+          bpm ? `${bpm} BPM` : null,
+          pct,
+        ].filter(Boolean);
+        statuses[i].icon = match && match.score >= 0.8 ? '✅' : match ? '⚠️' : '✅';
+        statuses[i].label = parts.join(' · ');
       } catch (err) {
         statuses[i].icon = '❌';
         statuses[i].label = `${track.title} — download failed`;
