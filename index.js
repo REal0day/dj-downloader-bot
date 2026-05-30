@@ -7,13 +7,13 @@ import {
   ButtonStyle,
   ComponentType,
 } from 'discord.js';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readdir } from 'node:fs/promises';
 import path from 'node:path';
 
 import { config, validateConfig } from './src/config.js';
 import { searchYouTube, downloadAudio, checkYtdlp } from './src/ytdlp.js';
 import { formatDuration, formatViews, SerialQueue } from './src/util.js';
-import { identify, detectBpm, writeTags, formatVerification } from './src/acoustid.js';
+import { identify, detectBpm, writeTags, formatVerification, isVerified } from './src/acoustid.js';
 
 // ---- startup validation ----
 const errors = validateConfig();
@@ -89,6 +89,13 @@ client.on('messageCreate', async (message) => {
   // access control
   if (config.allowedUserId && message.author.id !== config.allowedUserId) return;
   if (config.allowedChannelId && message.channelId !== config.allowedChannelId) return;
+
+  // ---- scan command: !dlscan [genre] ----
+  const scanPrefix = config.prefix + 'scan';
+  if (message.content.startsWith(scanPrefix)) {
+    await handleScan(message, scanPrefix);
+    return;
+  }
 
   // ---- batch command: !dlbatch <genre>\nsong1\nsong2\n... ----
   const batchPrefix = config.prefix + 'batch';
@@ -207,7 +214,7 @@ client.on('messageCreate', async (message) => {
       const filename = path.basename(finalPath);
 
       const [match, bpm] = await Promise.all([identify(finalPath), detectBpm(finalPath)]);
-      if (match && match.score >= 0.5) writeTags(finalPath, match, bpm);
+      writeTags(finalPath, match, bpm);
       const verification = formatVerification(match, bpm);
 
       await searching.edit(
@@ -220,6 +227,90 @@ client.on('messageCreate', async (message) => {
     }
   });
 });
+
+async function handleScan(message, scanPrefix) {
+  const genreArg = message.content.slice(scanPrefix.length).trim();
+
+  // Resolve which genre folders to scan
+  let targets;
+  if (genreArg) {
+    const genre = config.genres.find((g) => g.toLowerCase() === genreArg.toLowerCase());
+    if (!genre) {
+      await message.reply(`Unknown genre **${genreArg}**.\nAvailable: ${config.genres.join(', ')}`);
+      return;
+    }
+    targets = [path.join(config.outputDir, genre)];
+  } else {
+    targets = config.genres.map((g) => path.join(config.outputDir, g));
+  }
+
+  // Collect all unverified MP3s
+  const toProcess = [];
+  for (const dir of targets) {
+    let entries;
+    try {
+      entries = await readdir(dir, { recursive: true });
+    } catch {
+      continue; // folder doesn't exist yet
+    }
+    for (const entry of entries) {
+      if (!entry.toLowerCase().endsWith('.mp3')) continue;
+      const fullPath = path.join(dir, entry);
+      if (!isVerified(fullPath)) toProcess.push({ fullPath, name: path.basename(entry) });
+    }
+  }
+
+  if (!toProcess.length) {
+    await message.reply('✅ All MP3s are already verified — nothing to do.');
+    return;
+  }
+
+  const total = toProcess.length;
+  const counts = { ok: 0, warn: 0, fail: 0 };
+  let lastLine = '';
+  let done = 0;
+
+  const render = () =>
+    `🔍 Scanning — ${done}/${total} done\n` +
+    `✅ ${counts.ok} · ⚠️ ${counts.warn} · ❌ ${counts.fail} · ⏳ ${total - done} remaining\n` +
+    (lastLine ? `→ ${lastLine}` : '');
+
+  const statusMsg = await message.reply(
+    `🔍 Found **${total}** unverified MP3${total === 1 ? '' : 's'} — scanning…`
+  );
+
+  for (const file of toProcess) {
+    downloadQueue.add(async () => {
+      try {
+        const [match, bpm] = await Promise.all([identify(file.fullPath), detectBpm(file.fullPath)]);
+        writeTags(file.fullPath, match, bpm);
+        const pct = match ? Math.round(match.score * 100) : 0;
+        if (pct >= 80) counts.ok++;
+        else counts.warn++;
+        lastLine = [
+          file.name,
+          match?.artist ?? null,
+          match?.year   ?? null,
+          bpm           ? `${bpm} BPM` : null,
+          match         ? `${pct}%`    : 'no match',
+        ].filter(Boolean).join(' · ');
+      } catch {
+        counts.fail++;
+        lastLine = `❌ ${file.name}`;
+      }
+      done++;
+      await statusMsg.edit(render()).catch(() => {});
+    });
+  }
+
+  // Final summary queued after all scan jobs
+  downloadQueue.add(async () => {
+    await statusMsg.edit(
+      `✅ Scan complete — ${total} file${total === 1 ? '' : 's'}\n` +
+      `✅ ${counts.ok} verified · ⚠️ ${counts.warn} low confidence · ❌ ${counts.fail} failed`
+    ).catch(() => {});
+  });
+}
 
 async function handleBatch(message, batchPrefix) {
   const lines = message.content
@@ -289,7 +380,7 @@ async function handleBatch(message, batchPrefix) {
       try {
         const finalPath = await downloadAudio(track.url, destDir);
         const [match, bpm] = await Promise.all([identify(finalPath), detectBpm(finalPath)]);
-        if (match && match.score >= 0.5) writeTags(finalPath, match, bpm);
+        writeTags(finalPath, match, bpm);
         const pct = match ? `${Math.round(match.score * 100)}%` : null;
         const parts = [
           path.basename(finalPath),

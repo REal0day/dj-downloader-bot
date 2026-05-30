@@ -64,13 +64,34 @@ export async function identify(filePath) {
   };
 }
 
+// Returns true if the file has already been through the verification pipeline.
+export function isVerified(filePath) {
+  try {
+    const tags = NodeID3.read(filePath);
+    return tags.userDefinedText?.some((t) => t.description === 'ACOUSTID_SCORE') ?? false;
+  } catch {
+    return false;
+  }
+}
+
 export function writeTags(filePath, match, bpm) {
+  const score = match?.score ?? 0;
   const tags = {};
-  if (match?.artist) tags.artist = match.artist;
-  if (match?.title) tags.title = match.title;
-  if (match?.year) tags.year = match.year;
+
+  // Only overwrite music metadata if confident enough
+  if (score >= 0.5) {
+    if (match.artist) tags.artist = match.artist;
+    if (match.title)  tags.title  = match.title;
+    if (match.year)   tags.year   = match.year;
+  }
   if (bpm) tags.bpm = String(bpm);
-  if (Object.keys(tags).length) NodeID3.update(tags, filePath);
+
+  // Always stamp the score so !dlscan knows this file was processed
+  tags.userDefinedText = [
+    { description: 'ACOUSTID_SCORE', value: String(Math.round(score * 100)) },
+  ];
+
+  NodeID3.update(tags, filePath);
 }
 
 export function formatVerification(match, bpm) {
