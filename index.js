@@ -436,25 +436,15 @@ async function handlePlaylist(message, playlistPrefix) {
     return;
   }
 
-  // !dlplaylist <url-or-id> [genre]
-  const input    = args[0];
-  const genreArg = args.slice(1).join(' ');
-
+  // !dlplaylist <url-or-id>
+  const input = args[0];
   if (!input || sub === 'help') {
     await message.reply(
       `**${playlistPrefix} commands**\n` +
       `• \`${playlistPrefix} search <query>\` — search public playlists\n` +
       `• \`${playlistPrefix} user <spotify-user-id>\` — list a user's public playlists\n` +
-      `• \`${playlistPrefix} <spotify-url> [genre]\` — download a playlist`
+      `• \`${playlistPrefix} <spotify-url>\` — download a playlist (genre asked via buttons)`
     );
-    return;
-  }
-
-  const genre = genreArg
-    ? config.genres.find((g) => g.toLowerCase() === genreArg.toLowerCase())
-    : null;
-  if (genreArg && !genre) {
-    await message.reply(`Unknown genre **${genreArg}**.\nAvailable: ${config.genres.join(', ')}`);
     return;
   }
 
@@ -473,25 +463,26 @@ async function handlePlaylist(message, playlistPrefix) {
     return;
   }
 
-  // Show first 20 in embed (Discord limit)
   const preview = tracks.slice(0, 20);
   const more    = tracks.length > 20 ? `\n_…and ${tracks.length - 20} more_` : '';
   const embed   = new EmbedBuilder()
-    .setTitle(`🎵 Spotify Playlist (${tracks.length} tracks)`)
+    .setTitle(`🎵 Spotify Playlist — ${tracks.length} tracks`)
     .setColor(0x1db954)
     .setDescription(
       preview.map((t, i) =>
         `**${i + 1}.** ${t.displayTitle}${t.duration ? ` · ${t.duration}` : ''}`
       ).join('\n') + more
     )
-    .setFooter({ text: 'Click Download All to queue every track, or ✕ to cancel.' });
+    .setFooter({ text: 'Click Download All then pick a genre folder.' });
 
-  const actionRow = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('playlist:all').setLabel(`⬇️ Download All (${tracks.length})`).setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId('cancel').setLabel('✕ Cancel').setStyle(ButtonStyle.Danger)
-  );
-
-  await status.edit({ content: null, embeds: [embed], components: [actionRow] });
+  await status.edit({
+    content: null,
+    embeds: [embed],
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('playlist:all').setLabel(`⬇️ Download All (${tracks.length})`).setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('cancel').setLabel('✕ Cancel').setStyle(ButtonStyle.Danger)
+    )],
+  });
 
   const filter = (i) => i.user.id === message.author.id;
   let pick;
@@ -506,83 +497,14 @@ async function handlePlaylist(message, playlistPrefix) {
     return;
   }
 
-  // Genre selection
-  let destGenre = genre;
-  if (!destGenre) {
-    await pick.update({ content: 'Which folder?', embeds: [], components: buildGenreRows() });
-    let genrePick;
-    try {
-      genrePick = await status.awaitMessageComponent({ filter, componentType: ComponentType.Button, time: 60_000 });
-    } catch {
-      await status.edit({ content: '⏳ Timed out.', components: [] });
-      return;
-    }
-    destGenre = config.genres[parseInt(genrePick.customId.split(':')[1], 10)];
-    await genrePick.update({ content: `⬇️ Queueing ${tracks.length} tracks → \`${destGenre}\`…`, components: [] });
-  } else {
-    await pick.update({ content: `⬇️ Queueing ${tracks.length} tracks → \`${destGenre}\`…`, embeds: [], components: [] });
-  }
+  await pick.update({ content: '📁 Which genre folder?', embeds: [], components: buildGenreRows() });
+  const destGenre = await selectGenreViaButtons(message, status);
+  if (!destGenre) return;
 
-  const destDir  = path.join(config.outputDir, destGenre);
+  const destDir = path.join(config.outputDir, destGenre);
   await mkdir(destDir, { recursive: true });
 
-  const statuses    = tracks.map((t) => ({ label: t.displayTitle, icon: '⏳' }));
-  const renderStatus = () => {
-    const done  = statuses.filter((s) => ['✅','⚠️','❌'].includes(s.icon)).length;
-    const lines = statuses.slice(0, 15).map((s, i) => `**${i + 1}.** ${s.icon} ${s.label}`);
-    if (statuses.length > 15) lines.push(`_…${statuses.length - 15} more queued_`);
-    return `⬇️ Playlist → \`${destGenre}\` — ${done}/${tracks.length} done\n` + lines.join('\n');
-  };
-
-  await status.edit({ content: renderStatus(), embeds: [], components: [] });
-
-  tracks.forEach((track, i) => {
-    downloadQueue.add(async () => {
-      statuses[i].icon = '🔎';
-      if (i < 15) await status.edit(renderStatus()).catch(() => {});
-
-      let results;
-      try {
-        results = await searchYouTube(track.searchQuery, 1);
-      } catch {
-        statuses[i].icon = '❌'; statuses[i].label += ' — search failed';
-        await status.edit(renderStatus()).catch(() => {});
-        return;
-      }
-      if (!results.length) {
-        statuses[i].icon = '❌'; statuses[i].label += ' — no results';
-        await status.edit(renderStatus()).catch(() => {});
-        return;
-      }
-
-      statuses[i].icon = '⬇️';
-      await status.edit(renderStatus()).catch(() => {});
-
-      try {
-        const finalPath    = await downloadAudio(results[0].url, destDir);
-        const [match, bpm] = await Promise.all([identify(finalPath), detectBpm(finalPath)]);
-        writeTags(finalPath, match, bpm);
-        const pct = match ? `${Math.round(match.score * 100)}%` : null;
-        statuses[i].icon  = match?.score >= 0.8 ? '✅' : '⚠️';
-        statuses[i].label = [path.basename(finalPath), match?.artist, match?.year, bpm ? `${bpm} BPM` : null, pct]
-          .filter(Boolean).join(' · ');
-      } catch (err) {
-        statuses[i].icon = '❌'; statuses[i].label += ` — ${err.message.slice(0, 60)}`;
-      }
-      await status.edit(renderStatus()).catch(() => {});
-    });
-  });
-
-  // Final summary
-  downloadQueue.add(async () => {
-    const ok   = statuses.filter((s) => s.icon === '✅').length;
-    const warn = statuses.filter((s) => s.icon === '⚠️').length;
-    const fail = statuses.filter((s) => s.icon === '❌').length;
-    await status.edit(
-      `✅ Playlist complete — ${tracks.length} tracks\n` +
-      `✅ ${ok} verified · ⚠️ ${warn} low confidence · ❌ ${fail} failed`
-    ).catch(() => {});
-  });
+  queueBatchDownload(status, tracks.map((t) => ({ label: t.displayTitle, searchQuery: t.searchQuery })), destGenre, destDir);
 }
 
 async function handleChart(message, chartPrefix) {
@@ -635,24 +557,14 @@ async function handleChart(message, chartPrefix) {
     )
     .setFooter({ text: `${tracks.length} tracks · click Download All or pick a number` });
 
-  // Build button rows: numbered picks + Download All + Cancel
-  const rows = [];
-  let current = new ActionRowBuilder();
-  tracks.forEach((_, i) => {
-    if (i > 0 && i % 5 === 0) { rows.push(current); current = new ActionRowBuilder(); }
-    current.addComponents(
-      new ButtonBuilder().setCustomId(`chart:${i}`).setLabel(String(i + 1)).setStyle(ButtonStyle.Primary)
-    );
-  });
-  if (current.components.length) rows.push(current);
-  rows.push(
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('chart:all').setLabel('⬇️ Download All').setStyle(ButtonStyle.Success),
+  await status.edit({
+    content: null,
+    embeds: [embed],
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('chart:all').setLabel(`⬇️ Download All (${tracks.length})`).setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId('cancel').setLabel('✕ Cancel').setStyle(ButtonStyle.Danger)
-    )
-  );
-
-  await status.edit({ content: null, embeds: [embed], components: rows.slice(0, 5) });
+    )],
+  });
 
   const filter = (i) => i.user.id === message.author.id;
   let pick;
@@ -662,81 +574,24 @@ async function handleChart(message, chartPrefix) {
     await status.edit({ content: '⏳ Timed out.', embeds: [], components: [] });
     return;
   }
-
   if (pick.customId === 'cancel') {
     await pick.update({ content: 'Cancelled.', embeds: [], components: [] });
     return;
   }
 
-  // Resolve destination genre — ask if not provided
   let destGenre = genre;
   if (!destGenre) {
-    await pick.update({ content: `Which folder should these go into?`, embeds: [], components: buildGenreRows() });
-    let genrePick;
-    try {
-      genrePick = await status.awaitMessageComponent({ filter, componentType: ComponentType.Button, time: 60_000 });
-    } catch {
-      await status.edit({ content: '⏳ Timed out.', components: [] });
-      return;
-    }
-    destGenre = config.genres[parseInt(genrePick.customId.split(':')[1], 10)];
-    await genrePick.update({ content: `⬇️ Queueing downloads → \`${destGenre}\`…`, components: [] });
+    await pick.update({ content: '📁 Which genre folder?', embeds: [], components: buildGenreRows() });
+    destGenre = await selectGenreViaButtons(message, status);
+    if (!destGenre) return;
   } else {
-    await pick.update({ content: `⬇️ Queueing downloads → \`${destGenre}\`…`, embeds: [], components: [] });
+    await pick.update({ content: `📁 **${destGenre}** selected`, embeds: [], components: [] });
   }
 
-  // Determine which tracks to download
-  const toDownload = pick.customId === 'chart:all'
-    ? tracks
-    : [tracks[parseInt(pick.customId.split(':')[1], 10)]];
-
-  const destDir  = path.join(config.outputDir, destGenre);
+  const destDir = path.join(config.outputDir, destGenre);
   await mkdir(destDir, { recursive: true });
 
-  const statuses = toDownload.map((t) => ({ label: t.displayTitle, icon: '⏳' }));
-  const renderStatus = () =>
-    `⬇️ Chart download → \`${destGenre}\` (${toDownload.length} tracks)\n` +
-    statuses.map((s, i) => `**${i + 1}.** ${s.icon} ${s.label}`).join('\n');
-
-  await status.edit({ content: renderStatus(), embeds: [], components: [] });
-
-  toDownload.forEach((track, i) => {
-    downloadQueue.add(async () => {
-      statuses[i].icon = '🔎';
-      await status.edit(renderStatus()).catch(() => {});
-
-      const query = track.searchQuery;
-      let results;
-      try {
-        results = await searchYouTube(query, 1);
-      } catch {
-        statuses[i].icon = '❌'; statuses[i].label += ' — search failed';
-        await status.edit(renderStatus()).catch(() => {});
-        return;
-      }
-      if (!results.length) {
-        statuses[i].icon = '❌'; statuses[i].label += ' — no results';
-        await status.edit(renderStatus()).catch(() => {});
-        return;
-      }
-
-      statuses[i].icon = '⬇️'; statuses[i].label = results[0].title;
-      await status.edit(renderStatus()).catch(() => {});
-
-      try {
-        const finalPath    = await downloadAudio(results[0].url, destDir);
-        const [match, bpm] = await Promise.all([identify(finalPath), detectBpm(finalPath)]);
-        writeTags(finalPath, match, bpm);
-        const pct = match ? `${Math.round(match.score * 100)}%` : null;
-        statuses[i].icon  = match && match.score >= 0.8 ? '✅' : '⚠️';
-        statuses[i].label = [path.basename(finalPath), match?.artist, match?.year, bpm ? `${bpm} BPM` : null, pct]
-          .filter(Boolean).join(' · ');
-      } catch (err) {
-        statuses[i].icon = '❌'; statuses[i].label += ` — ${err.message.slice(0, 60)}`;
-      }
-      await status.edit(renderStatus()).catch(() => {});
-    });
-  });
+  queueBatchDownload(status, tracks.map((t) => ({ label: t.displayTitle, searchQuery: t.searchQuery })), destGenre, destDir);
 }
 
 async function handleNew(message) {
@@ -858,6 +713,99 @@ async function handleNew(message) {
     } catch (err) {
       await status.edit(`❌ Download failed: ${err.message}`);
     }
+  });
+}
+
+// ---- shared helpers ----
+
+// Search YouTube; if full query returns nothing, retry with title-only fallback.
+async function searchWithFallback(query) {
+  try {
+    const r = await searchYouTube(query, 1);
+    if (r.length) return r;
+  } catch {}
+  const titleOnly = query.includes(' - ') ? query.split(' - ').slice(1).join(' - ').trim() : null;
+  if (titleOnly) {
+    try {
+      const r = await searchYouTube(titleOnly, 1);
+      if (r.length) return r;
+    } catch {}
+  }
+  return [];
+}
+
+// Show genre buttons on statusMsg, wait for the user to pick, return the genre string.
+async function selectGenreViaButtons(message, statusMsg) {
+  await statusMsg.edit({ content: 'Which genre folder?', embeds: [], components: buildGenreRows() });
+  try {
+    const interaction = await statusMsg.awaitMessageComponent({
+      filter: (i) => i.user.id === message.author.id,
+      componentType: ComponentType.Button,
+      time: 60_000,
+    });
+    const genre = config.genres[parseInt(interaction.customId.split(':')[1], 10)];
+    await interaction.update({ content: `📁 **${genre}** selected`, components: [] });
+    return genre;
+  } catch {
+    await statusMsg.edit({ content: '⏳ Timed out — no genre selected.', components: [] });
+    return null;
+  }
+}
+
+// Queue all tracks for YouTube search + download + verify.
+// tracks: [{ label, searchQuery }]
+function queueBatchDownload(statusMsg, tracks, destGenre, destDir) {
+  const statuses = tracks.map((t) => ({ label: t.label, icon: '⏳' }));
+
+  const render = () => {
+    const done  = statuses.filter((s) => ['✅', '⚠️', '❌'].includes(s.icon)).length;
+    const lines = statuses.slice(0, 15).map((s, i) => `**${i + 1}.** ${s.icon} ${s.label}`);
+    if (statuses.length > 15) lines.push(`_…${statuses.length - 15} more queued_`);
+    return `⬇️ \`${destGenre}\` — ${done}/${tracks.length} done\n` + lines.join('\n');
+  };
+
+  statusMsg.edit({ content: render(), embeds: [], components: [] }).catch(() => {});
+
+  tracks.forEach((track, i) => {
+    downloadQueue.add(async () => {
+      statuses[i].icon = '🔎';
+      await statusMsg.edit(render()).catch(() => {});
+
+      const results = await searchWithFallback(track.searchQuery);
+      if (!results.length) {
+        statuses[i].icon  = '❌';
+        statuses[i].label += ' — not found on YouTube';
+        await statusMsg.edit(render()).catch(() => {});
+        return;
+      }
+
+      statuses[i].icon = '⬇️';
+      await statusMsg.edit(render()).catch(() => {});
+
+      try {
+        const finalPath    = await downloadAudio(results[0].url, destDir);
+        const [match, bpm] = await Promise.all([identify(finalPath), detectBpm(finalPath)]);
+        writeTags(finalPath, match, bpm);
+        const pct = match ? `${Math.round(match.score * 100)}%` : null;
+        statuses[i].icon  = match?.score >= 0.8 ? '✅' : '⚠️';
+        statuses[i].label = [path.basename(finalPath), match?.artist, match?.year, bpm ? `${bpm} BPM` : null, pct]
+          .filter(Boolean).join(' · ');
+      } catch (err) {
+        statuses[i].icon  = '❌';
+        statuses[i].label += ` — ${err.message.slice(0, 60)}`;
+      }
+      await statusMsg.edit(render()).catch(() => {});
+    });
+  });
+
+  downloadQueue.add(async () => {
+    const ok   = statuses.filter((s) => s.icon === '✅').length;
+    const warn = statuses.filter((s) => s.icon === '⚠️').length;
+    const fail = statuses.filter((s) => s.icon === '❌').length;
+    await statusMsg.edit(
+      `✅ Done — ${tracks.length} tracks → \`${destGenre}\`\n` +
+      `✅ ${ok} verified · ⚠️ ${warn} low confidence · ❌ ${fail} failed`
+    ).catch(() => {});
   });
 }
 
@@ -1021,86 +969,36 @@ async function handleBatch(message, batchPrefix) {
     .map((l) => l.trim())
     .filter(Boolean);
 
-  if (lines.length < 2) {
+  if (!lines.length) {
     await message.reply(
-      `Usage:\n\`\`\`\n${batchPrefix} <genre>\nsong 1\nsong 2\n...\n\`\`\`\nAvailable genres: ${config.genres.join(', ')}`
+      `Usage:\n\`\`\`\n${batchPrefix} [genre]\nsong 1\nsong 2\n...\n\`\`\`\nGenre is optional — if omitted you'll be asked via buttons.`
     );
     return;
   }
 
-  const genreLine = lines[0];
-  const queries = lines.slice(1);
+  // First line is genre if it exactly matches a configured genre (case-insensitive)
+  const firstLineGenre = config.genres.find((g) => g.toLowerCase() === lines[0].toLowerCase());
+  const queries   = firstLineGenre ? lines.slice(1) : lines;
+  let   destGenre = firstLineGenre ?? null;
 
-  const genre = config.genres.find((g) => g.toLowerCase() === genreLine.toLowerCase());
-  if (!genre) {
-    await message.reply(
-      `Unknown genre **${genreLine}**.\nAvailable: ${config.genres.join(', ')}`
-    );
+  if (!queries.length) {
+    await message.reply('No songs provided after the genre line.');
     return;
   }
 
-  const destDir = path.join(config.outputDir, genre);
+  const preview = queries.slice(0, 10).map((q, i) => `**${i + 1}.** ${q}`).join('\n');
+  const more    = queries.length > 10 ? `\n_…and ${queries.length - 10} more_` : '';
+  const statusMsg = await message.reply(`📋 **${queries.length} tracks**\n${preview}${more}`);
+
+  if (!destGenre) {
+    destGenre = await selectGenreViaButtons(message, statusMsg);
+    if (!destGenre) return;
+  }
+
+  const destDir = path.join(config.outputDir, destGenre);
   await mkdir(destDir, { recursive: true });
 
-  // track per-song state for the live status message
-  const statuses = queries.map((q) => ({ query: q, icon: '⏳', label: q }));
-
-  const renderStatus = () =>
-    `⬇️ Batch → \`${genre}\` (${queries.length} tracks)\n` +
-    statuses.map((s, i) => `**${i + 1}.** ${s.icon} ${s.label}`).join('\n');
-
-  const statusMsg = await message.reply(renderStatus());
-
-  for (let i = 0; i < queries.length; i++) {
-    const q = queries[i];
-    downloadQueue.add(async () => {
-      statuses[i].icon = '🔎';
-      await statusMsg.edit(renderStatus()).catch(() => {});
-
-      let results;
-      try {
-        results = await searchYouTube(q, 1);
-      } catch (err) {
-        statuses[i].icon = '❌';
-        statuses[i].label = `${q} — search failed`;
-        await statusMsg.edit(renderStatus()).catch(() => {});
-        return;
-      }
-
-      if (!results.length) {
-        statuses[i].icon = '❌';
-        statuses[i].label = `${q} — no results`;
-        await statusMsg.edit(renderStatus()).catch(() => {});
-        return;
-      }
-
-      const track = results[0];
-      statuses[i].icon = '⬇️';
-      statuses[i].label = track.title;
-      await statusMsg.edit(renderStatus()).catch(() => {});
-
-      try {
-        const finalPath = await downloadAudio(track.url, destDir);
-        const [match, bpm] = await Promise.all([identify(finalPath), detectBpm(finalPath)]);
-        writeTags(finalPath, match, bpm);
-        const pct = match ? `${Math.round(match.score * 100)}%` : null;
-        const parts = [
-          path.basename(finalPath),
-          match?.artist ?? null,
-          match?.year   ?? null,
-          bpm ? `${bpm} BPM` : null,
-          pct,
-        ].filter(Boolean);
-        statuses[i].icon = match && match.score >= 0.8 ? '✅' : match ? '⚠️' : '✅';
-        statuses[i].label = parts.join(' · ');
-      } catch (err) {
-        statuses[i].icon = '❌';
-        statuses[i].label = `${track.title} — download failed`;
-      }
-
-      await statusMsg.edit(renderStatus()).catch(() => {});
-    });
-  }
+  queueBatchDownload(statusMsg, queries.map((q) => ({ label: q, searchQuery: q })), destGenre, destDir);
 }
 
 client.login(config.token);
