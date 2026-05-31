@@ -166,7 +166,15 @@ export async function getUserPlaylists(userId, limit = 20) {
   }));
 }
 
+// Get all tracks — scrapes the public Spotify page first (same source Discord
+// uses for embeds, no auth needed), falls back to the API if scraping fails.
 export async function getPlaylistTracks(playlistId) {
+  try {
+    const tracks = await scrapePlaylistPage(playlistId);
+    if (tracks.length) return tracks;
+  } catch {}
+
+  // API fallback (needs user auth)
   const tracks = [];
   let   url    = `/playlists/${playlistId}/tracks?limit=100`;
   while (url) {
@@ -184,6 +192,40 @@ export async function getPlaylistTracks(playlistId) {
     url = data.next ? data.next.replace('https://api.spotify.com/v1', '') : null;
   }
   return tracks;
+}
+
+async function scrapePlaylistPage(playlistId) {
+  const res = await fetch(`https://open.spotify.com/playlist/${playlistId}`, {
+    headers: {
+      'User-Agent':      'Mozilla/5.0 (compatible; Googlebot/2.1)',
+      'Accept':          'text/html,application/xhtml+xml',
+      'Accept-Language': 'en-US,en;q=0.9',
+    },
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const html = await res.text();
+
+  // Spotify embeds a JSON-LD block with the full track list for SEO
+  for (const m of html.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)) {
+    try {
+      const data  = JSON.parse(m[1]);
+      const items = Array.isArray(data) ? data : [data];
+      for (const item of items) {
+        if (item['@type'] === 'MusicPlaylist' && Array.isArray(item.track) && item.track.length) {
+          return item.track.map((t) => {
+            const artist = t.byArtist?.name ?? '';
+            const name   = t.name ?? '';
+            return {
+              displayTitle: artist ? `${artist} — ${name}` : name,
+              searchQuery:  artist ? `${artist} - ${name}` : name,
+              duration:     null,
+            };
+          });
+        }
+      }
+    } catch {}
+  }
+  throw new Error('JSON-LD not found in page');
 }
 
 export function resolvePlaylistId(input) {
