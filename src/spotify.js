@@ -4,7 +4,7 @@ import path from 'node:path';
 import { config } from './config.js';
 
 const TOKENS_PATH    = path.join(process.cwd(), 'spotify_tokens.json');
-const REDIRECT_URI   = 'http://localhost:8888/callback';
+const REDIRECT_URI   = 'http://127.0.0.1:8888/callback';
 const SCOPES         = 'playlist-read-private playlist-read-collaborative';
 
 let tokenCache = { token: null, expiresAt: 0 };
@@ -129,7 +129,7 @@ export function waitForAuthCallback(timeoutMs = 120_000) {
     });
 
     server.on('error', reject);
-    server.listen(8888, '127.0.0.1');
+    server.listen(8888, '0.0.0.0');
 
     setTimeout(() => {
       server.close();
