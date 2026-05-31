@@ -38,7 +38,7 @@ export async function searchPlaylists(query, limit = 10) {
     id:     p.id,
     name:   p.name,
     owner:  p.owner?.display_name ?? 'Unknown',
-    tracks: p.tracks?.total ?? 0,
+    tracks: p.tracks?.total || '?',
     url:    p.external_urls?.spotify ?? `https://open.spotify.com/playlist/${p.id}`,
   }));
 }
@@ -50,7 +50,7 @@ export async function getUserPlaylists(userId, limit = 20) {
     id:     p.id,
     name:   p.name,
     owner:  p.owner?.display_name ?? userId,
-    tracks: p.tracks?.total ?? 0,
+    tracks: p.tracks?.total || '?',
     url:    p.external_urls?.spotify ?? `https://open.spotify.com/playlist/${p.id}`,
   }));
 }
