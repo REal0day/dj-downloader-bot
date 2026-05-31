@@ -5,7 +5,7 @@ import { config } from './config.js';
 
 const TOKENS_PATH    = path.join(process.cwd(), 'spotify_tokens.json');
 const REDIRECT_URI   = 'http://127.0.0.1:8888/callback';
-const SCOPES         = 'playlist-read-private playlist-read-collaborative';
+const SCOPES         = 'playlist-read-private playlist-read-collaborative playlist-read-public';
 
 let tokenCache = { token: null, expiresAt: 0 };
 let refreshToken = null;
