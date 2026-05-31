@@ -1,2 +1,5 @@
 .env
 node_modules/
+spotify_tokens.json
+cookies.txt
+watchlist.json

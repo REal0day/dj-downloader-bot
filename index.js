@@ -16,7 +16,7 @@ import { formatDuration, formatViews, SerialQueue } from './src/util.js';
 import { identify, detectBpm, writeTags, formatVerification, isVerified, readScore } from './src/acoustid.js';
 import { loadWatchlist, addWatch, removeWatch, checkAll, detectPlatform } from './src/watcher.js';
 import { fetchNewReleases, fetchChartTracks } from './src/beatport.js';
-import { searchPlaylists, getUserPlaylists, getPlaylistTracks, resolvePlaylistId, isConfigured as spotifyReady } from './src/spotify.js';
+import { searchPlaylists, getUserPlaylists, getPlaylistTracks, resolvePlaylistId, isConfigured as spotifyReady, isAuthed as spotifyAuthed, getAuthUrl, exchangeCode, init as spotifyInit } from './src/spotify.js';
 
 // ---- startup validation ----
 const errors = validateConfig();
@@ -42,6 +42,9 @@ client.once('clientReady', async (c) => {
   console.log(`Output dir: ${config.outputDir}`);
   console.log(`Genres: ${config.genres.join(', ')}`);
   console.log(`Listening for: "${config.prefix} <song name>"`);
+
+  await spotifyInit();
+  console.log(`Spotify: ${spotifyAuthed() ? 'authenticated (refresh token loaded)' : 'client credentials only — run !dlplaylist auth to enable playlists'}`);
 
   if (config.watchChannelId) {
     // Wait 1 min before first check so the bot fully settles after restart
@@ -383,6 +386,37 @@ async function handlePlaylist(message, playlistPrefix) {
 
   const args = message.content.slice(playlistPrefix.length).trim().split(/\s+/);
   const sub  = args[0]?.toLowerCase();
+
+  // !dlplaylist auth — start Spotify OAuth login
+  if (sub === 'auth') {
+    const url = getAuthUrl();
+    await message.reply(
+      `**Spotify login — one-time setup**\n\n` +
+      `1. Open this URL in your browser:\n${url}\n\n` +
+      `2. Approve the app\n` +
+      `3. Your browser will redirect to \`localhost:8888/callback?code=...\`\n` +
+      `4. Copy the value after \`code=\` (up to the \`&\` or end of URL)\n` +
+      `5. Paste it here: \`${config.prefix}playlist authcode <code>\``
+    );
+    return;
+  }
+
+  // !dlplaylist authcode <code> — complete OAuth login
+  if (sub === 'authcode') {
+    const code = args[1];
+    if (!code) {
+      await message.reply(`Usage: \`${playlistPrefix} authcode <code>\``);
+      return;
+    }
+    const status = await message.reply('⏳ Exchanging code with Spotify…');
+    try {
+      await exchangeCode(code);
+      await status.edit('✅ Spotify authenticated! Refresh token saved — you won\'t need to do this again.');
+    } catch (err) {
+      await status.edit(`❌ Auth failed: ${err.message}`);
+    }
+    return;
+  }
 
   // !dlplaylist search <query>
   if (sub === 'search') {
