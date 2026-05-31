@@ -16,7 +16,7 @@ import { formatDuration, formatViews, SerialQueue } from './src/util.js';
 import { identify, detectBpm, writeTags, formatVerification, isVerified, readScore } from './src/acoustid.js';
 import { loadWatchlist, addWatch, removeWatch, checkAll, detectPlatform } from './src/watcher.js';
 import { fetchNewReleases, fetchChartTracks } from './src/beatport.js';
-import { searchPlaylists, getUserPlaylists, getPlaylistTracks, resolvePlaylistId, isConfigured as spotifyReady, isAuthed as spotifyAuthed, getAuthUrl, exchangeCode, init as spotifyInit } from './src/spotify.js';
+import { searchPlaylists, getUserPlaylists, getPlaylistTracks, resolvePlaylistId, isConfigured as spotifyReady, isAuthed as spotifyAuthed, getAuthUrl, exchangeCode, waitForAuthCallback, init as spotifyInit } from './src/spotify.js';
 
 // ---- startup validation ----
 const errors = validateConfig();
@@ -387,29 +387,17 @@ async function handlePlaylist(message, playlistPrefix) {
   const args = message.content.slice(playlistPrefix.length).trim().split(/\s+/);
   const sub  = args[0]?.toLowerCase();
 
-  // !dlplaylist auth — start Spotify OAuth login
+  // !dlplaylist auth — start Spotify OAuth login (automatic callback capture)
   if (sub === 'auth') {
-    const url = getAuthUrl();
-    await message.reply(
+    const url    = getAuthUrl();
+    const status = await message.reply(
       `**Spotify login — one-time setup**\n\n` +
       `1. Open this URL in your browser:\n${url}\n\n` +
-      `2. Approve the app\n` +
-      `3. Browser will try to load \`https://localhost:8888/callback?code=...\` and show a connection error — that's expected\n` +
-      `4. Copy the \`code=\` value from the URL bar (everything between \`code=\` and \`&state\`)\n` +
-      `5. Paste it here: \`${config.prefix}playlist authcode <code>\``
+      `2. Approve the app — browser will redirect to localhost and show a success page\n` +
+      `3. Return here — the bot will confirm automatically ⏳`
     );
-    return;
-  }
-
-  // !dlplaylist authcode <code> — complete OAuth login
-  if (sub === 'authcode') {
-    const code = args[1];
-    if (!code) {
-      await message.reply(`Usage: \`${playlistPrefix} authcode <code>\``);
-      return;
-    }
-    const status = await message.reply('⏳ Exchanging code with Spotify…');
     try {
+      const code = await waitForAuthCallback();
       await exchangeCode(code);
       await status.edit('✅ Spotify authenticated! Refresh token saved — you won\'t need to do this again.');
     } catch (err) {

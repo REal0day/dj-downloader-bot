@@ -1,9 +1,10 @@
 import { readFile, writeFile } from 'node:fs/promises';
+import { createServer }        from 'node:http';
 import path from 'node:path';
 import { config } from './config.js';
 
 const TOKENS_PATH    = path.join(process.cwd(), 'spotify_tokens.json');
-const REDIRECT_URI   = 'https://localhost:8888/callback';
+const REDIRECT_URI   = 'http://localhost:8888/callback';
 const SCOPES         = 'playlist-read-private playlist-read-collaborative';
 
 let tokenCache = { token: null, expiresAt: 0 };
@@ -103,6 +104,38 @@ export async function exchangeCode(code) {
   }
   const data = await res.json();
   await saveTokens(data.access_token, data.refresh_token, data.expires_in);
+}
+
+// Start a temporary local HTTP server on port 8888 that catches the Spotify
+// callback and resolves with the auth code automatically.
+export function waitForAuthCallback(timeoutMs = 120_000) {
+  return new Promise((resolve, reject) => {
+    const server = createServer((req, res) => {
+      const url   = new URL(req.url, 'http://localhost:8888');
+      const code  = url.searchParams.get('code');
+      const error = url.searchParams.get('error');
+
+      if (code) {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end('<h1>✅ Authenticated!</h1><p>You can close this tab and return to Discord.</p>');
+        server.close();
+        resolve(code);
+      } else {
+        res.writeHead(400, { 'Content-Type': 'text/html' });
+        res.end(`<h1>❌ Error</h1><p>${error ?? 'Unknown'}</p>`);
+        server.close();
+        reject(new Error(error ?? 'Auth cancelled'));
+      }
+    });
+
+    server.on('error', reject);
+    server.listen(8888, '127.0.0.1');
+
+    setTimeout(() => {
+      server.close();
+      reject(new Error('Auth timed out — you have 2 minutes to complete login'));
+    }, timeoutMs);
+  });
 }
 
 export function isAuthed() {
