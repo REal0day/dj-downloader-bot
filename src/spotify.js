@@ -55,10 +55,10 @@ export async function getUserPlaylists(userId, limit = 20) {
   }));
 }
 
-// Get all tracks from a playlist. Returns { name, artists[] } objects.
+// Get all tracks from a playlist. Returns { displayTitle, searchQuery, duration }.
 export async function getPlaylistTracks(playlistId) {
   const tracks = [];
-  let   url    = `/playlists/${playlistId}/tracks?limit=100&fields=next,items(track(name,artists(name),duration_ms))`;
+  let   url    = `/playlists/${playlistId}/tracks?limit=100`;
 
   while (url) {
     const data = await api(url);
@@ -72,7 +72,6 @@ export async function getPlaylistTracks(playlistId) {
         duration:     t.duration_ms ? formatMs(t.duration_ms) : null,
       });
     }
-    // Spotify paginates; next is a full URL path after /v1
     url = data.next ? data.next.replace('https://api.spotify.com/v1', '') : null;
   }
   return tracks;
