@@ -195,37 +195,66 @@ export async function getPlaylistTracks(playlistId) {
 }
 
 async function scrapePlaylistPage(playlistId) {
-  const res = await fetch(`https://open.spotify.com/playlist/${playlistId}`, {
-    headers: {
-      'User-Agent':      'Mozilla/5.0 (compatible; Googlebot/2.1)',
-      'Accept':          'text/html,application/xhtml+xml',
-      'Accept-Language': 'en-US,en;q=0.9',
-    },
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const html = await res.text();
+  // Try main page and embed page — embed is what Discord actually renders
+  const urls = [
+    `https://open.spotify.com/playlist/${playlistId}`,
+    `https://open.spotify.com/embed/playlist/${playlistId}`,
+  ];
 
-  // Spotify embeds a JSON-LD block with the full track list for SEO
-  for (const m of html.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)) {
-    try {
-      const data  = JSON.parse(m[1]);
-      const items = Array.isArray(data) ? data : [data];
-      for (const item of items) {
-        if (item['@type'] === 'MusicPlaylist' && Array.isArray(item.track) && item.track.length) {
-          return item.track.map((t) => {
-            const artist = t.byArtist?.name ?? '';
+  for (const pageUrl of urls) {
+    const res = await fetch(pageUrl, {
+      headers: {
+        'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+    });
+    if (!res.ok) continue;
+    const html = await res.text();
+
+    // JSON-LD structured data (SEO)
+    for (const m of html.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)) {
+      try {
+        const data  = JSON.parse(m[1]);
+        const items = Array.isArray(data) ? data : [data];
+        for (const item of items) {
+          if (item['@type'] === 'MusicPlaylist' && Array.isArray(item.track) && item.track.length) {
+            return item.track.map((t) => {
+              const artist = t.byArtist?.name ?? '';
+              const name   = t.name ?? '';
+              return {
+                displayTitle: artist ? `${artist} — ${name}` : name,
+                searchQuery:  artist ? `${artist} - ${name}` : name,
+                duration:     null,
+              };
+            });
+          }
+        }
+      } catch {}
+    }
+
+    // Next.js embedded data
+    const nextMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+    if (nextMatch) {
+      try {
+        const root   = JSON.parse(nextMatch[1]);
+        const entity = root?.props?.pageProps?.state?.data?.entity;
+        if (entity?.tracks?.items?.length) {
+          return entity.tracks.items.map((item) => {
+            const t      = item?.track ?? item;
+            const artist = (t.artists ?? []).map((a) => a.name).join(', ');
             const name   = t.name ?? '';
             return {
               displayTitle: artist ? `${artist} — ${name}` : name,
               searchQuery:  artist ? `${artist} - ${name}` : name,
-              duration:     null,
+              duration:     t.duration_ms ? formatMs(t.duration_ms) : null,
             };
           });
         }
-      }
-    } catch {}
+      } catch {}
+    }
   }
-  throw new Error('JSON-LD not found in page');
+  throw new Error('Could not extract tracks from Spotify page HTML');
 }
 
 export function resolvePlaylistId(input) {
