@@ -394,8 +394,8 @@ async function handlePlaylist(message, playlistPrefix) {
       `**Spotify login — one-time setup**\n\n` +
       `1. Open this URL in your browser:\n${url}\n\n` +
       `2. Approve the app\n` +
-      `3. Your browser will redirect to \`localhost:8888/callback?code=...\`\n` +
-      `4. Copy the value after \`code=\` (up to the \`&\` or end of URL)\n` +
+      `3. Browser will try to load \`https://localhost:8888/callback?code=...\` and show a connection error — that's expected\n` +
+      `4. Copy the \`code=\` value from the URL bar (everything between \`code=\` and \`&state\`)\n` +
       `5. Paste it here: \`${config.prefix}playlist authcode <code>\``
     );
     return;

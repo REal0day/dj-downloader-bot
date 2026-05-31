@@ -3,7 +3,7 @@ import path from 'node:path';
 import { config } from './config.js';
 
 const TOKENS_PATH    = path.join(process.cwd(), 'spotify_tokens.json');
-const REDIRECT_URI   = 'http://localhost:8888/callback';
+const REDIRECT_URI   = 'https://localhost:8888/callback';
 const SCOPES         = 'playlist-read-private playlist-read-collaborative';
 
 let tokenCache = { token: null, expiresAt: 0 };
